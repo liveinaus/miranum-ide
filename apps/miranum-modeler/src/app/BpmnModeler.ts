@@ -26,6 +26,29 @@ import {
 
 import { getAlignToOrigin, StandardTextEditor, Watcher } from "./lib";
 
+const NAMESPACE_URL_CAMUNDA = "http://camunda.org/schema/1.0/bpmn";
+const NAMESPACE_URL_ACTIVITI = "http://activiti.org/bpmn";
+
+const NAMESPACE_ACTIVITI_USED = {
+    prefixes: ["activiti"],
+    uri: NAMESPACE_URL_ACTIVITI,
+};
+
+const NAMESPACE_CAMUNDA_USED = {
+    prefixes: ["camunda"],
+    uri: NAMESPACE_URL_ACTIVITI,
+};
+
+const NAMESPACE_ACTIVITI = {
+    prefix: "activiti",
+    uri: NAMESPACE_URL_ACTIVITI,
+};
+
+const NAMESPACE_CAMUNDA = {
+    prefix: "camunda",
+    uri: NAMESPACE_URL_CAMUNDA,
+};
+
 export class BpmnModeler implements CustomTextEditorProvider {
     public static readonly VIEWTYPE = "bpmn-modeler";
 
@@ -189,19 +212,21 @@ export class BpmnModeler implements CustomTextEditorProvider {
                         data = {
                             executionPlatformVersion:
                                 this.getModelerExecutionPlatformVersion(
-                                    document.getText(),
+                                    this.convertTextToCamundaText(document.getText()),
                                 ),
-                            bpmn: document.getText(),
+                            bpmn: this.convertTextToCamundaText(document.getText()),
                             additionalFiles: await artifacts,
                         };
                         break;
                     }
                     case MessageType.RESTORE: {
                         data = {
-                            bpmn: isBuffer ? document.getText() : undefined,
+                            bpmn: isBuffer
+                                ? this.convertTextToCamundaText(document.getText())
+                                : undefined,
                             executionPlatformVersion: isBuffer
                                 ? this.getModelerExecutionPlatformVersion(
-                                      document.getText(),
+                                      this.convertTextToCamundaText(document.getText()),
                                   )
                                 : ExecutionPlatformVersion.None,
                             additionalFiles: watcher.isUnresponsive(document.uri.path)
@@ -212,10 +237,10 @@ export class BpmnModeler implements CustomTextEditorProvider {
                     }
                     default: {
                         data = {
-                            bpmn: document.getText(),
+                            bpmn: this.convertTextToCamundaText(document.getText()),
                             executionPlatformVersion:
                                 this.getModelerExecutionPlatformVersion(
-                                    document.getText(),
+                                    this.convertTextToCamundaText(document.getText()),
                                 ),
                         };
                         break;
@@ -363,6 +388,68 @@ export class BpmnModeler implements CustomTextEditorProvider {
         return ExecutionPlatformVersion.None;
     }
 
+    private convertTextToCamundaText(xmlString: string): string {
+        const convertedXml = this.replaceUsages(
+            xmlString,
+            NAMESPACE_ACTIVITI_USED,
+            NAMESPACE_CAMUNDA,
+        );
+        return convertedXml;
+    }
+
+    private convertTextToActivitiText(xmlString: string): string {
+        const convertedXml = this.replaceUsages(
+            xmlString,
+            NAMESPACE_CAMUNDA_USED,
+            NAMESPACE_ACTIVITI,
+        );
+        return convertedXml;
+    }
+
+    private replaceUsages(xml: string, usages: any, ns: any): string {
+        // ensures that any result of #findUsages may be fet
+        // into this utility
+        if (usages === false) {
+            return xml;
+        }
+
+        const { uri: oldNamespaceUrl, prefixes: oldPrefixes } = usages;
+
+        const { prefix: newPrefix, uri: newNamespaceUrl } = ns;
+
+        const conversions = [
+            [
+                new RegExp(`(\\sxmlns:)[A-z0-9.-]+="${escape(oldNamespaceUrl)}"`, "g"),
+                `$1${newPrefix}="${newNamespaceUrl}"`,
+            ],
+            [
+                new RegExp(`(\\s)targetNamespace="${escape(oldNamespaceUrl)}"`, "g"),
+                `$1targetNamespace="${newNamespaceUrl}"`,
+            ],
+        ];
+
+        oldPrefixes.forEach((prefix: any) => {
+            const safePrefix = escape(prefix);
+
+            conversions.push(
+                [
+                    new RegExp("(\\s)" + safePrefix + "(:[A-z0-9-.]+)", "g"),
+                    `$1${newPrefix}$2`,
+                ],
+                [
+                    new RegExp("(<|</)" + safePrefix + "(:[A-z0-9-.]+(>|\\s))", "g"),
+                    `$1${newPrefix}$2`,
+                ],
+            );
+        });
+
+        return conversions.reduce((xml, conversion: any) => {
+            const [pattern, replacement] = conversion;
+
+            return xml.replace(pattern, replacement);
+        }, xml);
+    }
+
     /**
      * Get the HTML-Structure we want for our webview.
      * @param webview The reference to the webview.
@@ -483,13 +570,13 @@ export class BpmnModeler implements CustomTextEditorProvider {
         document: TextDocument,
         text: string,
     ): Promise<boolean> {
-        if (document.getText() === text) {
+        if (this.convertTextToCamundaText(document.getText()) === text) {
             return Promise.reject("No changes to apply!");
         }
 
         const edit = new WorkspaceEdit();
-
-        edit.replace(document.uri, new Range(0, 0, document.lineCount, 0), text);
+        const convertedXml = this.convertTextToActivitiText(text);
+        edit.replace(document.uri, new Range(0, 0, document.lineCount, 0), convertedXml);
 
         return Promise.resolve(workspace.applyEdit(edit));
     }
